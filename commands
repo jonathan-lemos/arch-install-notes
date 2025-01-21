@@ -1,0 +1,67 @@
+# setup disk encryption
+cryptsetup luksFormat --hash sha512 --iter-time 2000 --key-size 512 --sector-size 4096 /dev/...
+
+# remove old TPM (e.g. on firmware update)
+systemd-cryptenroll /dev/... # see slots
+systemd-cryptenroll /dev/... --wipe-slot $SLOT_FROM_ABOVE
+
+# TPM enroll (PCR0: BIOS ROM, 2: oproms, 7: secure boot state)
+systemd-cryptenroll --tpm2-device=auto --tpm2-pcrs=0+2+7 /dev/...
+
+# make sure pcr15 is not tampered with
+# this protects against the root partition being swapped for a bogus partition
+# whose purpose is to steal the TPM secret
+cp /this_repo/install/pcr15check /etc/initcpio/install/pcr15check
+cp /this_repo/hooks/pcr15check /etc/initcpio/hooks/pcr15check
+
+# add hooks for pcr15 and sd-encrypt
+/etc/mkinitcpio.conf:
+  HOOKS=(base **systemd** autodetect microcode modconf kms keyboard **keymap** block **sd-encrypt** **pcr15check** lvm2 **resume** filesystems fsck)
+
+/etc/cmdline/crypt.conf:
+  rd.luks.name=$(UUID (not PARTUUID) of /dev/nvme0n1...)=mapped_name rd.luks.name$(UUID (not partUUID) of /dev/mapper/mapped_name)=inner_name rd.luks.options=timeout=0,discard,password-echo=no,tries=5 rootflags=x-systemd.device-timeout=0
+
+/etc/cmdline/root.conf:
+  root=/dev/mapper/vg0-root rw
+
+/etc/cmdline/resume.conf:
+  resume=UUID=$(UUID (not PARTUUID) of /dev/mapper/vg0-root)
+
+/etc/cmdline/apparmor.conf (apparmor):
+  lsm=landlock,lockdown,yama,integrity,apparmor,bpf audit=1 audit_backlog_limit=256
+
+/etc/cmdline/misc.conf:
+  quiet
+ 
+# LVM setup
+pvcreate /dev/...
+vgcreate vg0 /dev/...
+lvcreate --size 32G vg0 --name=swap
+lvcreate -l +100%FREE vg0 --name root
+
+# fs setup
+mkfs.fat -F32 /dev/nvme0n1p1 # if windows EFI isn't already there
+mkfs.ext4 /dev/
+
+# fstab ext4 option optimization
+"relatime" in <options> column -- only update access time if earlier than modification time
+
+# UKI
+in /etc/mkinitcpio.d/$KERNEL.preset, uncomment `_uki` lines and comment `_config` and `_image` lines
+then mkdir -p /boot/EFI/Linux
+
+# sbctl setup
+sbctl status
+sbctl create-keys
+sbctl enroll-keys --microsoft # thinkpad will brick w/o --microsoft
+sbctl status
+sbctl verify
+sbctl sign -s /boot/EFI/$UKI
+sbctl status
+
+# packages
+pacstrap /mnt amd-ucode apparmor base base-devel firefox firejail fwupd git i3 iwctl konsole linux-firmware linux-zen lm_sensors mesa nerd-fonts neovim networkmanager network-manager-applet pavucontrol picom pipewire sbctl tlp upower vulkan-radeon xf86-video-amdgpu xorg-xserver xorg-apps xorg-xinit zsh
+
+# make swap and mount it
+mkswap /dev/...
+swapon /dev/...
