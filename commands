@@ -6,20 +6,14 @@ systemd-cryptenroll /dev/... # see slots
 systemd-cryptenroll /dev/... --wipe-slot $SLOT_FROM_ABOVE
 
 # TPM enroll (PCR0: BIOS ROM, 2: oproms, 7: secure boot state)
-systemd-cryptenroll --tpm2-device=auto --tpm2-pcrs=0+2+7 /dev/...
-
-# make sure pcr15 is not tampered with
-# this protects against the root partition being swapped for a bogus partition
-# whose purpose is to steal the TPM secret
-cp /this_repo/install/pcr15check /etc/initcpio/install/pcr15check
-cp /this_repo/hooks/pcr15check /etc/initcpio/hooks/pcr15check
+systemd-cryptenroll --tpm2-device=auto --tpm2-pcrs=0+2+7+15:sha256=0000000000000000000000000000000000000000000000000000000000000000 /dev/...
 
 # add hooks for pcr15 and sd-encrypt
 /etc/mkinitcpio.conf:
   HOOKS=(base **systemd** autodetect microcode modconf kms keyboard **keymap** block **sd-encrypt** **pcr15check** lvm2 **resume** filesystems fsck)
 
 /etc/cmdline/crypt.conf:
-  rd.luks.name=$(UUID (not PARTUUID) of /dev/nvme0n1...)=mapped_name rd.luks.name$(UUID (not partUUID) of /dev/mapper/mapped_name)=inner_name rd.luks.options=timeout=0,discard,password-echo=no,tries=5 rootflags=x-systemd.device-timeout=0
+  rd.luks.name=$(UUID (not PARTUUID) of /dev/nvme0n1...)=mapped_name rd.luks.name=$(UUID (not partUUID) of /dev/mapper/mapped_name)=inner_name rd.luks.options=timeout=0,discard,password-echo=no,tries=5 rootflags=x-systemd.device-timeout=0
 
 /etc/cmdline/root.conf:
   root=/dev/mapper/vg0-root rw
@@ -47,8 +41,10 @@ mkfs.ext4 /dev/
 "relatime" in <options> column -- only update access time if earlier than modification time
 
 # UKI
-in /etc/mkinitcpio.d/$KERNEL.preset, uncomment `_uki` lines and comment `_config` and `_image` lines
+in /etc/mkinitcpio.d/$KERNEL.preset, uncomment `_uki` lines and comment `_config` and `_image` lines -- change /efi to /boot
 then mkdir -p /boot/EFI/Linux
+
+efibootmgr --create --disk /dev/nvme0n1 --part 1 --label "Arch BTW (Zen)" --loader '\EFI\Linux\arch-linux-zen.efi'
 
 # sbctl setup
 sbctl status
@@ -60,8 +56,68 @@ sbctl sign -s /boot/EFI/$UKI
 sbctl status
 
 # packages
-pacstrap /mnt amd-ucode apparmor base base-devel firefox firejail fwupd git i3 iwctl konsole linux-firmware linux-zen lm_sensors mesa nerd-fonts neovim networkmanager network-manager-applet pavucontrol picom pipewire sbctl tlp upower vulkan-radeon xf86-video-amdgpu xorg-xserver xorg-apps xorg-xinit zsh
+pacstrap /mnt \
+  arc-gtk-theme \
+  amd-ucode \
+  apparmor \
+  base \
+  base-devel \
+  firefox \
+  firejail \
+  fwupd \
+  git \
+  i3 \
+  iwctl \
+  konsole \
+  linux-firmware \
+  linux-lts \
+  linux-zen \
+  lm_sensors \
+  lvm2 \
+  mesa \
+  nerd-fonts \
+  neovim \
+  networkmanager \
+  network-manager-applet \
+  pavucontrol \
+  picom \
+  pipewire \
+  sbctl \
+  tlp \
+  upower \
+  vulkan-radeon \
+  xf86-video-amdgpu \
+  xorg-apps \
+  xorg-server \
+  xorg-xinit \
+  zsh
+genfstab -pU /mnt >> /mnt/etc/fstab
 
 # make swap and mount it
 mkswap /dev/...
 swapon /dev/...
+
+# partition disk
+cgdisk /dev/...
+# use ef02 for boot partition if it's not already made
+
+# connect to wifi
+iwctl
+device list
+device wlan0 set-property Powered on # optional
+station name scan
+station name connect $SSID
+
+# post chroot setup
+arch-chroot /mnt
+ln -sf /usr/share/zoneinfo/US/Eastern /etc/localtime
+hwclock --systohc
+echo "arch-btw" > /etc/hostname
+useradd -m -G wheel -s /usr/bin/zsh <username>
+passwd <username>
+visudo
+
+lvim /etc/locale.gen
+locale-gen
+
+
